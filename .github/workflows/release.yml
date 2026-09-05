@@ -1,0 +1,50 @@
+
+name: 'C++ CI'
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # Клонирование
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      # Установка зависимостей
+      # - name: install dependencies
+      #   run: |
+      #     sudo apt-get update 
+      #     sudo apt-get install libboost-test-dev -y
+      # Конфигурация проекта
+      - name: configure cmake
+        run: |
+          cmake -B build \
+            -DPATCH_VERSION=${{ github.run_number }} \
+            -DWITH_GOOGLE_TEST=ON
+      # Сборка проекта 
+      - name: build project
+        run: |
+          cmake --build build --parallel
+      # Запуск тестов !!! -j $(nproc) только если тесты не пересекаются
+      # - name: run tests
+      #  run: |
+      #    ctest --test-dir build -j $(nproc) --output-on-failure
+      # Создание DEB-пакета
+      - name: Create Package
+        run: |
+          cmake --build build --target package
+      # Создание релиза и загрузка
+      - name: Create Release and Upload Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.0.${{ github.run_number }}
+          name: Release 0.0.${{ github.run_number }}
+          draft: false
+          prerelease: false
+          files: build/*.deb
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

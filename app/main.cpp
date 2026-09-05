@@ -14,7 +14,16 @@ private:
     std::size_t m_allocated_bytes = 0; // Сколько байт занято
 
 public:
-    explicit FixedArena(std::size_t byte_count) : m_max_bytes(byte_count), m_buffer(new uint8_t[byte_count]), m_allocated_bytes(0) {}
+    explicit FixedArena(std::size_t block_size, size_t blocks_count)
+    {
+        // Округляем размер блока вверх до кратности 16 (или другого max_align_t)
+        std::size_t alignment = alignof(std::max_align_t);
+        std::size_t aligned_block_size = (block_size + alignment - 1) & ~(alignment - 1);
+
+        m_max_bytes = aligned_block_size * blocks_count;
+        m_buffer = new uint8_t[m_max_bytes];
+        m_allocated_bytes = 0;
+    }
 
     ~FixedArena() {
         delete[] m_buffer;
@@ -56,62 +65,6 @@ public:
 
     std::size_t used() const noexcept {return m_allocated_bytes;}
     std::size_t available() const noexcept {return m_max_bytes - m_allocated_bytes;}
-};
-
-// STL-совместимый аллокатор
-template <typename T>
-class FixedMapAllocator {
-private:
-    std::size_t alloc_element;
-    std::shared_ptr<FixedArena> mem_alloc;
-
-public:
-    using value_type = T;
-
-    explicit FixedMapAllocator(std::size_t max_elements)
-        : alloc_element(max_elements), mem_alloc(nullptr)
-    {}
-
-    template <typename U>
-    FixedMapAllocator(const FixedMapAllocator<U>& other) noexcept : alloc_element(other.alloc_element), mem_alloc(other.mem_alloc) {}
-
-    template <typename U> friend class FixedMapAllocator;
-
-    T* allocate(std::size_t n)
-    { // [[nodiscard]]
-
-        if (n == 0)
-            return nullptr;
-
-        if(mem_alloc == nullptr)
-        {
-            size_t total_size = alloc_element * sizeof (T);
-            mem_alloc = std::make_shared<FixedArena>(total_size);
-        }
-
-        void* ptr = mem_alloc->allocate(n * sizeof(T));
-
-//        std::cout << "[Allocated] Request: " << n << " x " << sizeof(T)
-//                  << " bytes. \n";
-
-        return static_cast<T*>(ptr);
-    }
-
-    void deallocate(T* p, std::size_t) noexcept
-    {
-        mem_alloc->deallocate(p);
-    }
-
-    template<typename U>
-    struct rebind
-    {
-        typedef FixedMapAllocator<U> other;
-    };
-
-    template <typename U>
-    bool operator==(const FixedMapAllocator<U>& other) const noexcept { return alloc_element == other.alloc_element && mem_alloc == other.mem_alloc; }
-    template <typename U>
-    bool operator!=(const FixedMapAllocator<U>& other) const noexcept { return alloc_element != other.alloc_element || mem_alloc != other.mem_alloc; }
 };
 
 // Разделяемый контекст памяти
@@ -171,6 +124,11 @@ public:
 
     void* allocate(std::size_t n)
     {
+        if (bytes > m_block_size)
+        {
+            throw std::bad_alloc();
+        }
+
         if(m_free_list == nullptr)
         {
             allocate_chunk();
@@ -192,60 +150,6 @@ public:
     }
 };
 
-// STL-совместимый аллокатор
-template <typename T>
-class PoolMapAllocator {
-private:
-    std::size_t alloc_element;
-    std::shared_ptr<MemoryPool> mem_alloc;
-
-public:
-    using value_type = T;
-
-    explicit PoolMapAllocator(std::size_t max_elements)
-        : alloc_element(max_elements), mem_alloc(nullptr)
-    {}
-
-    template <typename U>
-    PoolMapAllocator(const PoolMapAllocator<U>& other) noexcept : alloc_element(other.alloc_element), mem_alloc(other.mem_alloc) {}
-
-    template <typename U> friend class PoolMapAllocator;
-
-    T* allocate(std::size_t n)
-    { // [[nodiscard]]
-
-        if (n == 0)
-            return nullptr;
-
-        if(mem_alloc == nullptr)
-        {
-            //size_t total_size = alloc_element * sizeof (T);
-            mem_alloc = std::make_shared<MemoryPool>(sizeof (T), alloc_element);
-        }
-
-        void* ptr = mem_alloc->allocate(n * sizeof (T));
-
-        return static_cast<T*>(ptr);
-    }
-
-    void deallocate(T* p, std::size_t) noexcept
-    {
-        mem_alloc->deallocate(p);
-    }
-
-    template<typename U>
-    struct rebind
-    {
-        typedef PoolMapAllocator<U> other;
-    };
-
-    template <typename U>
-    bool operator==(const PoolMapAllocator<U>& other) const noexcept { return alloc_element == other.alloc_element && mem_alloc == other.mem_alloc; }
-    template <typename U>
-    bool operator!=(const PoolMapAllocator<U>& other) const noexcept { return alloc_element != other.alloc_element || mem_alloc != other.mem_alloc; }
-};
-
-
 
 template <typename T, typename Type>
 class CastomAllocator {
@@ -261,7 +165,16 @@ public:
     {}
 
     template <typename U>
-    CastomAllocator(const CastomAllocator<U, Type>& other) noexcept : alloc_element(other.alloc_element), mem_alloc(other.mem_alloc) {}
+    CastomAllocator(const CastomAllocator<U, Type>& other) noexcept
+        : alloc_element(other.alloc_element), mem_alloc(other.mem_alloc)
+    {
+        // Если это первый rebind и арена еще не создана
+        if (mem_alloc == nullptr && alloc_element > 0) {
+            // Теперь T — это РЕАЛЬНЫЙ тип узла дерева std::map!
+            // Создаем арену под точный размер структуры узла
+            mem_alloc = std::make_shared<Type>(sizeof(T), alloc_element);
+        }
+    }
 
     template <typename U, typename A> friend class CastomAllocator;
 
@@ -293,7 +206,7 @@ public:
     template<typename U>
     struct rebind
     {
-        typedef CastomAllocator<U, Type> other;
+        using other = CastomAllocator<U, Type>;
     };
 
     template <typename U>

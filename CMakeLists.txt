@@ -33,7 +33,7 @@ endif()
 
 #----------------------------------------------------------------------------
 # Подключаем папки с исходным кодом и тестами
-# add_subdirectory(library)
+add_subdirectory(library)
 add_subdirectory(app)
 # if(WITH_GOOGLE_TEST)
     # add_subdirectory(tests)
